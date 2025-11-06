@@ -1,0 +1,114 @@
+# This is a reusable workflow for testing quickstart applications.
+name: Reusable Quickstart Test
+
+on:
+  workflow_call:
+    inputs:
+      sdk:
+        description: 'The name of the SDK to test.'
+        required: true
+        type: string
+      artifact:
+        description: 'The artifact to download.'
+        required: true
+        type: string
+      run_id:
+        description: 'The run ID to download the artifact from.'
+        required: true
+        type: string
+      os:
+        description: 'The OS to run on.'
+        required: true
+        type: string
+      xcode:
+        description: 'The Xcode version to use.'
+        required: true
+        type: string
+      setup_command:
+        description: 'The command to set up the quickstart.'
+        required: true
+        type: string
+      post_setup_command:
+        description: 'An optional command to run after setting up the quickstart.'
+        required: false
+        type: string
+      quickstart_path:
+        description: 'The path to the quickstart directory.'
+        required: true
+        type: string
+      encrypted_plist_path:
+        description: 'The path to the encrypted GoogleService-Info.plist.'
+        required: true
+        type: string
+      post_test_command:
+        description: 'An optional command to run after testing and before uploading artifacts.'
+        required: false
+        type: string
+      upload_path:
+        description: 'Path to upload on failure.'
+        required: false
+        type: string
+        default: |
+          quickstart-ios/
+          !quickstart-ios/**/GoogleService-Info.plist
+      upload_build_logs:
+        description: 'Whether to upload build logs on failure.'
+        required: false
+        type: boolean
+        default: false
+      build_logs_path:
+        description: 'Path to the build logs to upload.'
+        required: false
+        type: string
+        default: 'sdk_zip/build_logs/'
+    secrets:
+      plist_secret:
+        required: true
+
+jobs:
+  quickstart:
+    runs-on: ${{ inputs.os }}
+    steps:
+    - uses: actions/checkout@v4
+    - name: Get framework dir
+      uses: actions/download-artifact@v4.1.7
+      with:
+        name: ${{ inputs.artifact }}
+        run-id: ${{ inputs.run_id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+    - uses: ruby/setup-ruby@354a1ad156761f5ee2b7b13fa8e09943a5e8d252 # v1
+    - name: Xcode
+      run: sudo xcode-select -s /Applications/${{ inputs.xcode }}.app/Contents/Developer
+    - name: Setup Bundler
+      run: ./scripts/setup_bundler.sh
+    - name: Move frameworks
+      run: |
+        mkdir -p "${HOME}"/ios_frameworks/
+        find "${GITHUB_WORKSPACE}" -name "Firebase*latest.zip" -exec unzip -d "${HOME}"/ios_frameworks/ {} +
+    - name: Setup quickstart
+      shell: bash
+      run: ${{ inputs.setup_command }}
+    - name: Upload build logs on failure
+      if: ${{ failure() && inputs.upload_build_logs }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: build_logs_${{ inputs.sdk }}_${{ inputs.artifact }}_${{ inputs.os }}
+        path: ${{ inputs.build_logs_path }}
+    - name: Post-setup
+      if: ${{ inputs.post_setup_command != '' }}
+      shell: bash
+      run: ${{ inputs.post_setup_command }}
+    - name: Install Secret GoogleService-Info.plist
+      run: scripts/decrypt_gha_secret.sh ${{ inputs.encrypted_plist_path }}
+        ${{ inputs.quickstart_path }}/GoogleService-Info.plist "${{ secrets.plist_secret }}"
+    - name: Test Quickstart
+      run: ([ -z "${{ secrets.plist_secret }}" ] || scripts/third_party/travis/retry.sh scripts/test_quickstart_framework.sh "${{ inputs.sdk }}")
+    - name: Post-test
+      if: ${{ always() && inputs.post_test_command != '' }}
+      shell: bash
+      run: ${{ inputs.post_test_command }}
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: quickstart_artifacts_${{ inputs.sdk }}_${{ inputs.artifact }}_${{ inputs.os }}
+        path: ${{ inputs.upload_path }}
